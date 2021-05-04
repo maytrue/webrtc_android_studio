@@ -19,12 +19,15 @@ import org.webrtc.SurfaceTextureHelper;
 import org.webrtc.SurfaceViewRenderer;
 import org.webrtc.TextureBufferImpl;
 import org.webrtc.VideoCapturer;
+import org.webrtc.VideoFileRenderer;
 import org.webrtc.VideoFrame;
+import org.webrtc.YuvHelper;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -44,6 +47,7 @@ public class ZRtcEngine {
     private int videoHeight = 720;
     private int videoFps = 15;
     private AtomicBoolean isFrameCaptured = new AtomicBoolean(false);
+    private FileOutputStream fileOutputStream = null;
 
     private static final String VIDEO_FLEXFEC_FIELDTRIAL =
             "WebRTC-FlexFEC-03-Advertised/Enabled/WebRTC-FlexFEC-03/Enabled/";
@@ -100,7 +104,6 @@ public class ZRtcEngine {
                     if (localView != null) {
                         localView.onFrame(frame);
                     }
-                    Log.d(TAG, "onFrameCaptured width:" + frame.getRotatedWidth() + ", height:" + frame.getRotatedHeight() + ", rotation:" + frame.getRotation());
 
                     VideoFrame.Buffer origBuffer = frame.getBuffer();
                     TextureBufferImpl origTextureBuffer = (TextureBufferImpl)origBuffer;
@@ -108,26 +111,20 @@ public class ZRtcEngine {
                     Matrix origTransform = origTextureBuffer.getTransformMatrix();
                     float[] transformData = new float[9];
                     origTransform.getValues(transformData);
-                    Log.d(TAG, "onFrameCaptured transformData:" + Arrays.toString(transformData));
+                    // Log.d(TAG, "onFrameCaptured transformData:" + Arrays.toString(transformData));
 
                     if (isFrameCaptured.get()) {
-                        // VideoFrame.I420Buffer buffer = frame.getBuffer().toI420();
-
-                        // VideoFrame.Buffer cropBuffer = frame.getBuffer().cropAndScale(0, 0, 960, 540, 960, 540);
-                        // VideoFrame.I420Buffer buffer = cropBuffer.toI420();
-                        // cropBuffer.release();
-
                         Matrix transform = new Matrix();
-                        //transform.setRotate(frame.getRotation());
+                        transform.preTranslate(0.5f, 0.5f);
+                        transform.preRotate(frame.getRotation());
+                        transform.preTranslate(-0.5f, -0.5f);
 
                         VideoFrame.Buffer rotateBuffer = origTextureBuffer.applyTransformMatrix(transform, frame.getRotatedWidth(), frame.getRotatedHeight());
                         VideoFrame.I420Buffer buffer = rotateBuffer.toI420();
-
                         dumpFrame(buffer);
-
-                        isFrameCaptured.set(false);
                         buffer.release();
                         rotateBuffer.release();
+                        //isFrameCaptured.set(false);
                     }
                 }
             });
@@ -213,33 +210,33 @@ public class ZRtcEngine {
         return fieldTrials;
     }
 
-    private void dumpFrame(VideoFrame.I420Buffer buffer) {
+    private String getDumpFileName(int width, int height) {
         File directory = appContext.getExternalFilesDir("webrtc_tutorial");
-        String fileName = String.format("%d-%d-%d.yuv", buffer.getWidth(), buffer.getHeight(), System.currentTimeMillis());
+        String fileName = String.format("%d-%d-%d.yuv", width, height, System.currentTimeMillis());
         File file = new File(directory, fileName);
         Log.d(TAG, "onFrameCaptured fileName:" + file.getAbsolutePath());
+        return file.getAbsolutePath();
+    }
 
+    private void dumpFrame(VideoFrame.I420Buffer buffer) {
         try {
-            FileOutputStream outputStream = new FileOutputStream(file);
+            if (fileOutputStream == null) {
+                File directory = appContext.getExternalFilesDir("webrtc_tutorial");
+                String fileName = String.format("%d-%d-%d.yuv", buffer.getWidth(), buffer.getHeight(), System.currentTimeMillis());
+                File file = new File(directory, fileName);
+                Log.d(TAG, "onFrameCaptured fileName:" + file.getAbsolutePath());
+                fileOutputStream = new FileOutputStream(file);
+            }
 
             int width = buffer.getWidth();
             int height = buffer.getHeight();
 
-            byte[] bytesY = new byte[width * height];
-            buffer.getDataY().get(bytesY, 0, width * height);
-            outputStream.write(bytesY);
+            int outputFrameSize = width * height * 3 / 2;
+            ByteBuffer outputFrameBuffer = ByteBuffer.allocateDirect(outputFrameSize);
 
-            byte[] bytesU = new byte[width * height / 4];
-            buffer.getDataU().get(bytesU, 0, width * height / 4);
-            outputStream.write(bytesU);
-
-            byte[] bytesV = new byte[width * height / 4];
-            buffer.getDataV().get(bytesV, 0, width * height / 4);
-            outputStream.write(bytesV);
-
-            Log.d(TAG, "onFrameCaptured strideY:" + buffer.getStrideY());
-            Log.d(TAG, "onFrameCaptured strideU:" + buffer.getStrideU());
-            Log.d(TAG, "onFrameCaptured strideV:" + buffer.getStrideV());
+            YuvHelper.I420Copy(buffer.getDataY(), buffer.getStrideY(), buffer.getDataU(), buffer.getStrideU(),
+                    buffer.getDataV(), buffer.getStrideV(), outputFrameBuffer, width, height);
+            fileOutputStream.write(outputFrameBuffer.array(), outputFrameBuffer.arrayOffset(), outputFrameSize);
 
         } catch (FileNotFoundException e) {
             Log.d(TAG, "onFrameCaptured:" + e.getMessage());
